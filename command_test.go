@@ -6542,7 +6542,8 @@ func TestJSONExportCommand(t *testing.T) {
 					  "TrimSpace": false
 					},
 					"onlyOnce": false,
-					"validateDefaults" : false
+					"validateDefaults" : false,
+					"merge": 0
 				  },
 				  {
 					"name": "sub-command-flag",
@@ -6563,7 +6564,8 @@ func TestJSONExportCommand(t *testing.T) {
 					  "Count": null
 					},
 					"onlyOnce": false,
-					"validateDefaults" : false
+					"validateDefaults" : false,
+					"merge": 0
 				  }
 				],
 				"hideHelp": false,
@@ -6609,7 +6611,8 @@ func TestJSONExportCommand(t *testing.T) {
 				  "TrimSpace": false
 				},
 				"onlyOnce": false,
-				"validateDefaults" : false
+				"validateDefaults" : false,
+					"merge": 0
 			  },
 			  {
 				"name": "another-flag",
@@ -6630,7 +6633,8 @@ func TestJSONExportCommand(t *testing.T) {
 				  "Count": null
 				},
 				"onlyOnce": false,
-				"validateDefaults" : false
+				"validateDefaults" : false,
+					"merge": 0
 			  }
 			],
 			"hideHelp": false,
@@ -6752,7 +6756,8 @@ func TestJSONExportCommand(t *testing.T) {
 				  "Count": null
 				},
 				"onlyOnce": false,
-				"validateDefaults": false
+				"validateDefaults": false,
+				"merge": 0
 			  }
 			],
 			"hideHelp": false,
@@ -6822,7 +6827,8 @@ func TestJSONExportCommand(t *testing.T) {
 					  "Count": null
 					},
 					"onlyOnce": false,
-					"validateDefaults" : false
+					"validateDefaults" : false,
+					"merge": 0
 				  }
 				],
 				"hideHelp": false,
@@ -6868,7 +6874,8 @@ func TestJSONExportCommand(t *testing.T) {
 				  "TrimSpace": false
 				},
 				"onlyOnce": false,
-				"validateDefaults" : false
+				"validateDefaults" : false,
+					"merge": 0
 			  },
 			  {
 				"name": "another-flag",
@@ -6889,7 +6896,8 @@ func TestJSONExportCommand(t *testing.T) {
 				  "Count": null
 				},
 				"onlyOnce": false,
-				"validateDefaults" : false
+				"validateDefaults" : false,
+					"merge": 0
 			  }
 			],
 			"hideHelp": false,
@@ -6934,7 +6942,8 @@ func TestJSONExportCommand(t *testing.T) {
 			  "TrimSpace": false
 			},
 			"onlyOnce": false,
-			"validateDefaults" : false
+			"validateDefaults" : false,
+					"merge": 0
 		  },
 		  {
 			"name": "flag",
@@ -6956,7 +6965,8 @@ func TestJSONExportCommand(t *testing.T) {
 			  "TrimSpace": false
 			},
 			"onlyOnce": false,
-			"validateDefaults" : false
+			"validateDefaults" : false,
+					"merge": 0
 		  },
 		  {
 			"name": "another-flag",
@@ -6977,7 +6987,8 @@ func TestJSONExportCommand(t *testing.T) {
 			  "Count": null
 			},
 			"onlyOnce": false,
-			"validateDefaults" : false
+			"validateDefaults" : false,
+					"merge": 0
 		  },
 		  {
 			"name": "hidden-flag",
@@ -6996,7 +7007,8 @@ func TestJSONExportCommand(t *testing.T) {
 			  "Count": null
 			},
 			"onlyOnce": false,
-			"validateDefaults" : false
+			"validateDefaults" : false,
+					"merge": 0
 		  }
 		],
 		"hideHelp": false,

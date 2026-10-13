@@ -74,6 +74,9 @@ type FlagBase[T any, C any, VC ValueCreator[T, C]] struct {
 	OnlyOnce         bool                                     `json:"onlyOnce"`         // whether this flag can be duplicated on the command line
 	Validator        func(T) error                            `json:"-"`                // custom function to validate this flag value
 	ValidateDefaults bool                                     `json:"validateDefaults"` // whether to validate defaults or not
+	Merge            MergeStrategy                            `json:"merge"`            // how default, source and repeated command-line values are combined; zero keeps the default behavior
+	MergeFunc        func([]T) (T, error)                     `json:"-"`                // custom merge function used when Merge is MergeStrategyCustom
+	Normalize        func(T) (T, error)                       `json:"-"`                // optional normalization applied to the merged value before validation
 
 	// unexported fields for internal use
 	count      int            // number of times the flag has been set
@@ -85,6 +88,7 @@ type FlagBase[T any, C any, VC ValueCreator[T, C]] struct {
 	stringer   FlagStringFunc // optional per-flag override of FlagStringer
 
 	multiValueConfig *multiValueParsingConfig // last parsing config passed to value
+	txn              *flagValueTransaction[T] // pending merge transaction, when enabled
 }
 
 // GetValue returns the flags value as string representation and an empty
@@ -133,6 +137,14 @@ func (f *FlagBase[T, C, V]) TypeName() string {
 // PostParse populates the flag given the flag set and environment
 func (f *FlagBase[T, C, V]) PostParse() error {
 	tracef("postparse (flag=%[1]q)", f.Name)
+
+	// Transactional flags do not apply sources eagerly: the resolved value
+	// is buffered and merged with defaults and command-line occurrences at
+	// commit time.
+	if f.txn != nil && !f.txn.committed {
+		f.stageSourceValue()
+		return nil
+	}
 
 	if !f.hasBeenSet {
 		// reflect.TypeOf yields nil when T is an interface type (e.g.
@@ -208,7 +220,21 @@ func (f *FlagBase[T, C, V]) getTypedValue() T {
 }
 
 func (f *FlagBase[T, C, V]) PreParse() error {
-	f.value = f.newValue()
+	if f.transactionConfigured() {
+		txn, err := f.beginTransaction()
+		if err != nil {
+			return err
+		}
+		f.txn = txn
+
+		// Stage the default in a scratch value. The Destination is only
+		// written when CommitPending succeeds, so an aborted parse leaves
+		// no partial state behind.
+		f.value = f.creator.Create(f.Value, new(T), f.Config)
+	} else {
+		f.txn = nil
+		f.value = f.newValue()
+	}
 
 	// Validate the given default or values set from external sources as well
 	if f.Validator != nil && f.ValidateDefaults {
@@ -241,7 +267,9 @@ func (f *FlagBase[T, C, V]) Set(_ string, val string) error {
 	// replaces it rather than being added to it or counted as a duplicate.
 	// This happens for a persistent flag: its command reads the Sources
 	// before a subcommand parses the flag from the command line.
-	if f.fromSource {
+	// Pending transactions handle source layering themselves in
+	// CommitPending, so the eager reset must not discard their state.
+	if f.fromSource && (f.txn == nil || f.txn.committed) {
 		f.fromSource = false
 		f.count = 0
 		f.value = f.newValue()
@@ -252,6 +280,15 @@ func (f *FlagBase[T, C, V]) Set(_ string, val string) error {
 
 	if f.count == 1 && f.OnlyOnce {
 		return fmt.Errorf("can't duplicate this flag")
+	}
+
+	// While a merge transaction is open, raw command-line values are
+	// buffered: decoding and validation are deferred to CommitPending so
+	// that a rejected parse never publishes partial results.
+	if f.txn != nil && !f.txn.committed {
+		f.count++
+		f.stageValue(val)
+		return nil
 	}
 
 	f.count++

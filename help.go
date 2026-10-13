@@ -223,6 +223,17 @@ func printFlagSuggestions(lastArg string, flags []Flag, writer io.Writer) {
 			usage = docFlag.GetUsage()
 		}
 
+		// Surface the merge semantics of repeatable transactional flags so
+		// that shell completions describe how repeated values combine.
+		if mf, ok := flag.(MergeSemanticsFlag); ok && mf.GetMergeStrategy() != MergeStrategyDefault {
+			if hint := mf.MergeSemanticsText(); hint != "" {
+				if usage != "" {
+					usage += "; "
+				}
+				usage += hint
+			}
+		}
+
 		name := strings.TrimSpace(flag.Names()[0])
 		// this will get total count utf8 letters in flag name
 		count := utf8.RuneCountInString(name)

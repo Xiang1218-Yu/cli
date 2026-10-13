@@ -334,6 +334,42 @@ func (cmd *Command) run(ctx context.Context, osArgs []string) (_ context.Context
 	// First, resolve the chain of nested commands up to the parent.
 	cmdChain := commandChain(cmd)
 
+	// Publish transactional flag values now that the whole command line has
+	// been parsed successfully across every command in the chain. Buffering
+	// until this point guarantees that a failed decoding, normalization or
+	// validation leaves no partially written flag state behind, and that
+	// Before funcs and flag actions only observe committed values.
+	if err := cmd.commitPendingFlagValues(); err != nil {
+		deferErr = err
+		cmd.isInError = true
+		if cmd.checkHelp() {
+			ctx = context.WithValue(ctx, helpShownKey{}, true)
+			if cmd.parent == nil {
+				_ = ShowRootCommandHelp(cmd)
+			} else {
+				_ = ShowSubcommandHelp(cmd)
+			}
+			return ctx, nil
+		}
+		if cmd.OnUsageError != nil {
+			err = cmd.OnUsageError(ctx, cmd, err, cmd.parent != nil)
+			deferErr = cmd.handleExitCoder(ctx, err)
+			return ctx, deferErr
+		}
+		fmt.Fprintf(cmd.Root().ErrWriter, "Incorrect Usage: %s\n\n", err.Error())
+		if !cmd.hideHelp() {
+			if cmd.parent == nil {
+				if err := ShowRootCommandHelp(cmd); err != nil {
+					tracef("SILENTLY IGNORING ERROR running ShowRootCommandHelp %[1]v (cmd=%[2]q)", err, cmd.Name)
+				}
+			} else {
+				_ = ShowSubcommandHelp(cmd)
+			}
+		}
+
+		return ctx, err
+	}
+
 	printDeprecationWarnings(cmdChain)
 
 	// Run ArgValidator from the nearest ancestor that sets one.

@@ -767,3 +767,39 @@ func (cmd *Command) runFlagActions(ctx context.Context) error {
 
 	return nil
 }
+
+// commitPendingFlagValues publishes values for every transactional flag
+// visible to the command chain. Each flag instance is committed once even
+// when it is a persistent flag applied by several commands, so all
+// occurrences gathered across parent and child commands use the same merge
+// rule.
+func (cmd *Command) commitPendingFlagValues() error {
+	committed := map[Flag]struct{}{}
+
+	for _, c := range commandChain(cmd) {
+		flags := c.appliedFlags
+		if len(flags) == 0 {
+			// A command with SkipFlagParsing never populated appliedFlags.
+			flags = c.allFlags()
+		}
+
+		for _, fl := range flags {
+			if _, ok := committed[fl]; ok {
+				continue
+			}
+			committed[fl] = struct{}{}
+
+			tf, ok := fl.(transactionalFlag)
+			if !ok {
+				continue
+			}
+
+			if err := tf.CommitPending(); err != nil {
+				name := fl.Names()[0]
+				return fmt.Errorf("invalid value for flag %s%s: %w", prefixFor(name), name, err)
+			}
+		}
+	}
+
+	return nil
+}

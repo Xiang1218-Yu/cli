@@ -125,5 +125,13 @@ func stringifyFlag(f Flag) string {
 		pn = pn + " [ " + pn + " ]"
 	}
 
+	// Describe how repeated occurrences of the flag are combined when a
+	// merge transaction has been configured.
+	if mf, ok := f.(MergeSemanticsFlag); ok && mf.GetMergeStrategy() != MergeStrategyDefault {
+		if hint := mf.MergeSemanticsText(); hint != "" {
+			usageWithDefault = strings.TrimSpace(usageWithDefault + " [" + hint + "]")
+		}
+	}
+
 	return withEnvHint(df.GetEnvVars(), fmt.Sprintf("%s\t%s", pn, usageWithDefault))
 }
