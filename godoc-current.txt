@@ -227,6 +227,19 @@ func HandleExitCoder(err error)
 
     This function is the default error-handling behavior for a Command.
 
+func RegisterCleanup(ctx context.Context, name string, fn CleanupFunc) bool
+    RegisterCleanup registers fn as a resource cleanup action for the
+    current command invocation. Cleanup functions run exactly once during the
+    LifecycleCleanup phase, in the reverse order in which they were registered,
+    and still run after cancellation, hook errors and panics.
+
+    name identifies the cleanup in lifecycle events and in
+    LifecycleError.CompletedSteps; it may be empty.
+
+    RegisterCleanup returns false (and does nothing) when lifecycle
+    orchestration is not enabled for the current invocation, so the same hook
+    code can run both with and without Command.EnableLifecycle.
+
 func ShowCommandHelpAndExit(ctx context.Context, cmd *Command, command string, code int)
     ShowCommandHelpAndExit exits with code after showing help via
     ShowCommandHelp.
@@ -461,6 +474,16 @@ type CategorizableFlag interface {
     CategorizableFlag is an interface that allows us to potentially use a flag
     in a categorized representation.
 
+type CleanupFunc func(context.Context) error
+    CleanupFunc is a resource-release action registered for one command
+    invocation through RegisterCleanup. It runs exactly once during the
+    LifecycleCleanup phase, in the reverse order of registration, and still
+    runs when the invocation was canceled, a hook returned an error, or a hook
+    panicked.
+
+    The context passed to a CleanupFunc may already be canceled; cleanup
+    functions must release their resources regardless.
+
 type Command struct {
 	// The name of the command
 	Name string `json:"name"`
@@ -508,6 +531,36 @@ type Command struct {
 	// An action to execute after any subcommands are run, but after the subcommand has finished
 	// It is run even if Action() panics
 	After AfterFunc `json:"-"`
+	// EnableLifecycle opts the invocation into explicit lifecycle
+	// orchestration. The setting is read on the root command and applies to
+	// the whole command chain of one invocation.
+	//
+	// When enabled, the phases of a normal invocation run in a fixed order:
+	//   - prepare: Before hooks, root command first down to the invoked command
+	//   - execute: the invoked command's Action
+	//   - finalize: After hooks of successfully prepared commands, invoked
+	//     command first back up to the root
+	//   - cleanup: functions registered with RegisterCleanup, exactly once,
+	//     in reverse registration order
+	//
+	// Context cancellation, a Before or Action error, or a recovered panic
+	// stop all later forward phases, while finalize and cleanup still run for
+	// the phases that had started. The returned *LifecycleError keeps the
+	// primary error discoverable through errors.Is/errors.As (including
+	// context.Canceled and *LifecyclePanicError) and separately exposes
+	// finalize and cleanup errors.
+	// Help and version entries run only their execute phase; the completion
+	// entry runs prepare, execute (completion rendering) and cleanup but no
+	// After hooks.
+	//
+	// When false (the default), Before/After and all other hooks keep their
+	// historical behavior and RegisterCleanup is a no-op.
+	EnableLifecycle bool `json:"enableLifecycle"`
+	// LifecycleObserver, when set together with EnableLifecycle on the root
+	// command, receives an event for every lifecycle phase begin/end and for
+	// the end of the invocation, including help, version and completion
+	// entries.
+	LifecycleObserver LifecycleObserverFunc `json:"-"`
 	// An action to validate arguments before the command is run. If non-nil, it
 	// is called before Before and Action. If the current command does not set
 	// ArgValidator, the nearest ancestor that does is used instead.
@@ -1297,6 +1350,173 @@ type IntegerConfig struct {
 type InvalidFlagAccessFunc func(context.Context, *Command, string)
     InvalidFlagAccessFunc is executed when an invalid flag is accessed from the
     context.
+
+type LifecycleEntry string
+    LifecycleEntry identifies how an invocation entered the command graph.
+
+const (
+	// LifecycleEntryRun is a normal command invocation.
+	LifecycleEntryRun LifecycleEntry = "run"
+
+	// LifecycleEntryHelp is an invocation handled by the built-in help
+	// (the --help/-h flag or the help command action).
+	LifecycleEntryHelp LifecycleEntry = "help"
+
+	// LifecycleEntryCompletion is a shell completion request
+	// (--generate-shell-completion).
+	LifecycleEntryCompletion LifecycleEntry = "completion"
+
+	// LifecycleEntryVersion is an invocation handled by the --version flag.
+	LifecycleEntryVersion LifecycleEntry = "version"
+)
+type LifecycleError struct {
+	// Has unexported fields.
+}
+    LifecycleError is returned from a lifecycle-enabled invocation when the
+    primary forward phase failed or any finalize/cleanup hook failed.
+
+    The primary error is available from Unwrap (or Cause), so errors.Is and
+    errors.As keep recognizing context cancellation, ExitCoder values and
+    sentinel errors. Errors produced while finalizing and cleaning up are kept
+    separately through FinalizeErrors and CleanupErrors: they never replace the
+    primary error.
+
+func (e *LifecycleError) Cause() error
+    Cause returns the primary error of the invocation; see Unwrap.
+
+func (e *LifecycleError) CleanupErrors() []LifecycleHookError
+    CleanupErrors returns errors produced by cleanup functions, in execution
+    order (reverse registration order).
+
+func (e *LifecycleError) CompletedSteps() []LifecycleStep
+    CompletedSteps returns the steps that executed, in execution order.
+    It includes every Before hook that ran, the execute step when it ran,
+    every After hook that ran, and every cleanup function that ran, regardless
+    of whether they returned an error or panicked.
+
+func (e *LifecycleError) Entry() LifecycleEntry
+    Entry reports how the invocation entered the command graph.
+
+func (e *LifecycleError) Error() string
+
+func (e *LifecycleError) Errors() []error
+    Errors returns the primary error followed by all finalize and cleanup
+    errors, omitting nils. It makes LifecycleError satisfy the package's
+    MultiError interface.
+
+func (e *LifecycleError) FinalizeErrors() []LifecycleHookError
+    FinalizeErrors returns errors produced by After hooks, in execution order
+    (innermost command first).
+
+func (e *LifecycleError) Unwrap() error
+    Unwrap returns the primary error: the context error on cancellation,
+    the error returned by the failing Before or Action, or the recovered panic.
+    It returns nil when only teardown hooks failed.
+
+type LifecycleEvent struct {
+	// Type is the kind of event.
+	Type LifecycleEventType
+	// Entry is how the invocation entered the command graph.
+	Entry LifecycleEntry
+	// Step is the step the event belongs to. It is the zero value for
+	// LifecycleEnd events.
+	Step LifecycleStep
+	// Err carries the step error on LifecycleStageEnd, or the final
+	// invocation error on LifecycleEnd; nil otherwise.
+	Err error
+}
+    LifecycleEvent is delivered to Command.LifecycleObserver as the invocation
+    moves through its lifecycle.
+
+type LifecycleEventType string
+    LifecycleEventType classifies a LifecycleEvent.
+
+const (
+	// LifecycleStageBegin is emitted before a lifecycle step runs.
+	LifecycleStageBegin LifecycleEventType = "stage_begin"
+	// LifecycleStageEnd is emitted after a lifecycle step runs, carrying
+	// its error (nil on success).
+	LifecycleStageEnd LifecycleEventType = "stage_end"
+	// LifecycleEnd is emitted once when the whole invocation finishes,
+	// carrying the final *LifecycleError (nil on full success).
+	LifecycleEnd LifecycleEventType = "invocation_end"
+)
+type LifecycleHookError struct {
+	// Step is the lifecycle step that produced the error.
+	Step LifecycleStep
+	// Err is the error returned by the hook, or a *LifecyclePanicError
+	// recovered from a panicking hook.
+	Err error
+}
+    LifecycleHookError pairs a hook error (or recovered panic) with the step
+    that produced it.
+
+func (e LifecycleHookError) Error() string
+
+func (e LifecycleHookError) Unwrap() error
+    Unwrap returns the underlying hook error.
+
+type LifecycleObserverFunc func(LifecycleEvent)
+    LifecycleObserverFunc observes a lifecycle-enabled invocation. Observers
+    must not panic and must return quickly; they run synchronously on the
+    goroutine executing the command.
+
+type LifecyclePanicError struct {
+	// Step is the lifecycle step that panicked.
+	Step LifecycleStep
+	// Value is the recovered panic value.
+	Value any
+	// Stack is the captured stack trace at the recovery point.
+	Stack []byte
+}
+    LifecyclePanicError wraps a value recovered from a panicking lifecycle hook.
+    In lifecycle-enabled invocations a panic does not crash the process:
+    it is recovered, teardown (finalize and cleanup) continues, and the
+    recovered value is returned to the caller wrapped in a LifecyclePanicError,
+    either as the primary error or alongside one.
+
+func (e *LifecyclePanicError) Error() string
+
+type LifecycleStage string
+    LifecycleStage names one ordered phase of a command invocation.
+
+const (
+	// LifecyclePrepare is the preparation phase: the Before hooks of the
+	// command chain run in order from the root command to the invoked
+	// (innermost) command.
+	LifecyclePrepare LifecycleStage = "prepare"
+
+	// LifecycleExecute is the execution phase: the Action of the invoked
+	// command (or the help/completion rendering for those entries).
+	LifecycleExecute LifecycleStage = "execute"
+
+	// LifecycleFinalize is the finalization phase: the After hooks of
+	// commands whose Before hook completed run in the reverse order, from
+	// the invoked command back to the root.
+	LifecycleFinalize LifecycleStage = "finalize"
+
+	// LifecycleCleanup is the resource cleanup phase: cleanup functions
+	// registered with RegisterCleanup run exactly once, in the reverse
+	// order in which they were registered.
+	LifecycleCleanup LifecycleStage = "cleanup"
+)
+type LifecycleStep struct {
+	// Command is the full name (command path) of the command owning the
+	// step, for example "app servers start".
+	Command string
+
+	// Stage is the lifecycle phase of the step.
+	Stage LifecycleStage
+
+	// Name is the name passed to RegisterCleanup for LifecycleCleanup
+	// steps, or "help"/"completion"/"version" for those execute entries.
+	// It is empty for ordinary prepare/execute/finalize steps.
+	Name string
+}
+    LifecycleStep identifies one step of an invocation: a hook phase on a
+    specific command, or a named cleanup function.
+
+func (s LifecycleStep) String() string
 
 type LocalFlag interface {
 	IsLocal() bool

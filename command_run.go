@@ -109,6 +109,12 @@ func (cmd *Command) run(ctx context.Context, osArgs []string) (_ context.Context
 		cmd.parent = v
 	}
 
+	// Join an in-flight invocation lifecycle, or start one on the root
+	// command when lifecycle orchestration is enabled. lc is nil in the
+	// default mode, in which case every code path below behaves exactly
+	// as before.
+	ctx, lc := ensureLifecycle(ctx, cmd)
+
 	if cmd.parent == nil {
 		if cmd.ReadArgsFromStdin {
 			if args, err := cmd.parseArgsFromStdin(); err != nil {
@@ -143,7 +149,7 @@ func (cmd *Command) run(ctx context.Context, osArgs []string) (_ context.Context
 	if cmd.parent == nil {
 		cmd.setupCommandGraph()
 		if err := cmd.Walk((*Command).checkDuplicateFlagNames); err != nil {
-			return ctx, err
+			return ctx, lcFinish(lc, ctx, cmd, LifecycleEntryRun, err)
 		}
 	}
 
@@ -155,7 +161,7 @@ func (cmd *Command) run(ctx context.Context, osArgs []string) (_ context.Context
 			continue
 		}
 		if err := f.PreParse(); err != nil {
-			return ctx, err
+			return ctx, lcFinish(lc, ctx, cmd, LifecycleEntryRun, err)
 		}
 	}
 
@@ -171,6 +177,9 @@ func (cmd *Command) run(ctx context.Context, osArgs []string) (_ context.Context
 	tracef("using post-parse arguments %[1]q (cmd=%[2]q)", args, cmd.Name)
 
 	if shouldRunCompletion(cmd) {
+		if lc != nil {
+			return lc.runCompletionEntry(ctx, cmd)
+		}
 		var beforeErr error
 		if ctx, beforeErr = runBefore(ctx, commandChain(cmd)); beforeErr != nil {
 			return ctx, beforeErr
@@ -191,12 +200,12 @@ func (cmd *Command) run(ctx context.Context, osArgs []string) (_ context.Context
 			} else {
 				_ = ShowSubcommandHelp(cmd)
 			}
-			return ctx, nil
+			return ctx, lcFinish(lc, ctx, cmd, LifecycleEntryHelp, nil)
 		}
 		if cmd.OnUsageError != nil {
 			err = cmd.OnUsageError(ctx, cmd, err, cmd.parent != nil)
 			err = cmd.handleExitCoder(ctx, err)
-			return ctx, err
+			return ctx, lcFinish(lc, ctx, cmd, LifecycleEntryRun, err)
 		}
 		fmt.Fprintf(cmd.Root().ErrWriter, "Incorrect Usage: %s\n\n", err.Error())
 		if cmd.Suggest {
@@ -216,17 +225,23 @@ func (cmd *Command) run(ctx context.Context, osArgs []string) (_ context.Context
 			}
 		}
 
-		return ctx, err
+		return ctx, lcFinish(lc, ctx, cmd, LifecycleEntryRun, err)
 	}
 
 	if cmd.checkHelp() {
 		ctx = context.WithValue(ctx, helpShownKey{}, true)
+		if lc != nil {
+			return lc.runHelpEntry(ctx, cmd)
+		}
 		return ctx, helpCommandAction(ctx, cmd)
 	} else {
 		tracef("no help is wanted (cmd=%[1]q)", cmd.Name)
 	}
 
 	if cmd.parent == nil && !cmd.HideVersion && checkVersion(cmd) {
+		if lc != nil {
+			return lc.runVersionEntry(ctx, cmd)
+		}
 		ShowVersion(cmd)
 		return ctx, nil
 	}
@@ -235,7 +250,7 @@ func (cmd *Command) run(ctx context.Context, osArgs []string) (_ context.Context
 		cmd.setMultiValueParsingConfig(flag)
 		isSet := flag.IsSet()
 		if err := flag.PostParse(); err != nil {
-			return ctx, err
+			return ctx, lcFinish(lc, ctx, cmd, LifecycleEntryRun, err)
 		}
 		// add env set flags here
 		if !isSet && flag.IsSet() {
@@ -243,7 +258,7 @@ func (cmd *Command) run(ctx context.Context, osArgs []string) (_ context.Context
 		}
 	}
 
-	if cmd.After != nil && !cmd.Root().shellCompletion {
+	if cmd.After != nil && !cmd.Root().shellCompletion && lc == nil {
 		defer func() {
 			if ctx.Value(helpShownKey{}) != nil {
 				return
@@ -277,7 +292,7 @@ func (cmd *Command) run(ctx context.Context, osArgs []string) (_ context.Context
 						}
 					}
 				}
-				return ctx, err
+				return ctx, lcFinish(lc, ctx, cmd, LifecycleEntryRun, err)
 			}
 		}
 	}
@@ -331,6 +346,13 @@ func (cmd *Command) run(ctx context.Context, osArgs []string) (_ context.Context
 	// This code path is the innermost command execution. Here we actually
 	// perform the command action.
 	//
+	// When lifecycle orchestration is enabled, the lifecycle owns the
+	// ordered prepare/execute/finalize/cleanup sequence for the whole
+	// command chain, including panic recovery and teardown error tracking.
+	if lc != nil {
+		return lc.runTerminal(ctx, cmd)
+	}
+
 	// First, resolve the chain of nested commands up to the parent.
 	cmdChain := commandChain(cmd)
 

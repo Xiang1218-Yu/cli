@@ -67,6 +67,36 @@ type Command struct {
 	// An action to execute after any subcommands are run, but after the subcommand has finished
 	// It is run even if Action() panics
 	After AfterFunc `json:"-"`
+	// EnableLifecycle opts the invocation into explicit lifecycle
+	// orchestration. The setting is read on the root command and applies to
+	// the whole command chain of one invocation.
+	//
+	// When enabled, the phases of a normal invocation run in a fixed order:
+	//   - prepare: Before hooks, root command first down to the invoked command
+	//   - execute: the invoked command's Action
+	//   - finalize: After hooks of successfully prepared commands, invoked
+	//     command first back up to the root
+	//   - cleanup: functions registered with RegisterCleanup, exactly once,
+	//     in reverse registration order
+	//
+	// Context cancellation, a Before or Action error, or a recovered panic
+	// stop all later forward phases, while finalize and cleanup still run for
+	// the phases that had started. The returned *LifecycleError keeps the
+	// primary error discoverable through errors.Is/errors.As (including
+	// context.Canceled and *LifecyclePanicError) and separately exposes
+	// finalize and cleanup errors.
+	// Help and version entries run only their execute phase; the completion
+	// entry runs prepare, execute (completion rendering) and cleanup but no
+	// After hooks.
+	//
+	// When false (the default), Before/After and all other hooks keep their
+	// historical behavior and RegisterCleanup is a no-op.
+	EnableLifecycle bool `json:"enableLifecycle"`
+	// LifecycleObserver, when set together with EnableLifecycle on the root
+	// command, receives an event for every lifecycle phase begin/end and for
+	// the end of the invocation, including help, version and completion
+	// entries.
+	LifecycleObserver LifecycleObserverFunc `json:"-"`
 	// An action to validate arguments before the command is run. If non-nil, it
 	// is called before Before and Action. If the current command does not set
 	// ArgValidator, the nearest ancestor that does is used instead.
